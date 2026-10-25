@@ -1,0 +1,2241 @@
+Below is the complete project, delivered in this message as you asked. It’s called Repo Assistant: paste a public GitHub URL, and it loads the file tree, analyzes the architecture, explains any file, and has an AI agent you can chat with (“where is authentication handled?”).
+
+I chose Groq as the AI provider. Its free tier needs no credit card, and usage is capped by rate limits (requests and tokens per minute or per day). Limits apply per organization and per model, and you can check your current limits at console.groq.com/settings/limits. Groq and OpenRouter both use the OpenAI API format, so switching between them is just a config change (covered at the end). 
+Is there a free tier and what are its limits?
+ +2
+
+Part 1: Requirements
+
+Functional requirements
+
+Load a repository: accept a GitHub URL (https://github.com/owner/repo or owner/repo) and show its metadata and file list.
+Find files: instant search box that filters files by name or path.
+Explain a file: click any file to get an AI explanation (purpose, key parts, how it fits, dependencies).
+Analyze architecture: the AI reads the file tree plus key files (README, .csproj, package.json, Dockerfile, etc.) and explains the tech stack, pattern, folder structure and data flow.
+Agentic chat: an AI agent with tools (search_files, list_directory, read_file) that decides by itself which files to look at to answer your question.
+
+Non-functional requirements
+
+Layered design: Clean Architecture backend (Domain → Application → Infrastructure → API).
+Configuration and secrets: settings via the Options pattern, and API keys stored in dotnet user-secrets, never in code.
+Error handling: global errors returned as standard ProblemDetails JSON.
+Caching: GitHub responses are cached in memory to avoid rate limits.
+Frontend: Angular standalone components, signals-based state, OnPush change detection, and an HTTP error interceptor.
+
+What you need to install
+
+.NET SDK: .NET 10 SDK (or .NET 8 or later). Check with dotnet --version.
+Node.js: Node.js LTS (20 or later). Check with node -v.
+Angular CLI: install with npm install -g @angular/cli.
+Editor: VS Code or Visual Studio.
+
+Free accounts and keys
+
+Groq API key (required): sign up at console.groq.com, then go to API Keys and create a key (starts with gsk_).
+GitHub token (optional but recommended): without it, GitHub allows only 60 requests per hour. Create one at GitHub → Settings → Developer settings → Personal access tokens → Fine-grained token, with read-only access to public repositories.
+Part 2: Folder structure
+RepoAssistant/
+├── src/
+│   ├── RepoAssistant.Domain/                  # Core entities, no dependencies
+│   │   ├── Entities/
+│   │   │   ├── RepositoryReference.cs
+│   │   │   ├── RepositoryMetadata.cs
+│   │   │   └── RepositoryFile.cs
+│   │   └── Exceptions/
+│   │       └── DomainExceptions.cs
+│   │
+│   ├── RepoAssistant.Application/             # Business logic + interfaces
+│   │   ├── Abstractions/
+│   │   │   ├── IGitHubClient.cs
+│   │   │   ├── ILanguageModel.cs
+│   │   │   └── IRepositoryAgent.cs
+│   │   ├── Common/
+│   │   │   ├── AnalysisOptions.cs
+│   │   │   ├── ChatRoles.cs
+│   │   │   └── RepositoryFileFilters.cs
+│   │   ├── Dtos/
+│   │   │   ├── RequestDtos.cs
+│   │   │   └── ResponseDtos.cs
+│   │   ├── Models/
+│   │   │   └── RepositoryContext.cs
+│   │   ├── Prompts/
+│   │   │   └── PromptTemplates.cs
+│   │   ├── Services/
+│   │   │   ├── IRepositoryAnalysisService.cs
+│   │   │   └── RepositoryAnalysisService.cs
+│   │   └── DependencyInjection.cs
+│   │
+│   ├── RepoAssistant.Infrastructure/          # External services (GitHub, AI)
+│   │   ├── AI/
+│   │   │   ├── Plugins/
+│   │   │   │   └── RepositoryPlugin.cs
+│   │   │   ├── LlmErrorMapper.cs
+│   │   │   ├── LlmOptions.cs
+│   │   │   ├── SemanticKernelLanguageModel.cs
+│   │   │   └── SemanticKernelRepositoryAgent.cs
+│   │   ├── GitHub/
+│   │   │   ├── GitHubApiModels.cs
+│   │   │   ├── GitHubClient.cs
+│   │   │   └── GitHubOptions.cs
+│   │   └── DependencyInjection.cs
+│   │
+│   └── RepoAssistant.Api/                     # HTTP layer
+│       ├── Controllers/
+│       │   └── RepositoryController.cs
+│       ├── ExceptionHandling/
+│       │   └── GlobalExceptionHandler.cs
+│       ├── Properties/
+│       │   └── launchSettings.json
+│       ├── appsettings.json
+│       └── Program.cs
+│
+└── client/
+    └── repo-assistant-ui/                     # Angular app
+        └── src/
+            ├── environments/
+            │   └── environment.ts
+            ├── app/
+            │   ├── core/
+            │   │   ├── interceptors/api-error.interceptor.ts
+            │   │   ├── models/repository.models.ts
+            │   │   ├── services/repository-api.service.ts
+            │   │   └── state/repository.store.ts
+            │   ├── shared/
+            │   │   └── pipes/markdown.pipe.ts
+            │   ├── features/
+            │   │   ├── repo-search/          (.ts + .html)
+            │   │   ├── file-explorer/        (.ts + .html)
+            │   │   ├── architecture-panel/   (.ts + .html)
+            │   │   ├── file-explanation-panel/ (.ts + .html)
+            │   │   └── chat-panel/           (.ts + .html)
+            │   ├── app.component.ts
+            │   ├── app.component.html
+            │   └── app.config.ts
+            ├── main.ts
+            └── styles.scss
+
+Why this structure: Domain has no dependencies. Application holds business logic and talks only to interfaces. Infrastructure implements those interfaces with GitHub and Semantic Kernel. The API layer is thin, so swapping Groq for Azure OpenAI only touches Infrastructure. This is a good point to explain in interviews.
+
+Part 3: Backend setup commands
+
+Run these in a terminal, from the folder where you want the project:
+
+bash
+mkdir RepoAssistant && cd RepoAssistant
+dotnet new sln -n RepoAssistant
+
+dotnet new classlib -n RepoAssistant.Domain -o src/RepoAssistant.Domain
+dotnet new classlib -n RepoAssistant.Application -o src/RepoAssistant.Application
+dotnet new classlib -n RepoAssistant.Infrastructure -o src/RepoAssistant.Infrastructure
+dotnet new webapi -n RepoAssistant.Api -o src/RepoAssistant.Api --use-controllers
+
+dotnet sln add src/RepoAssistant.Domain
+dotnet sln add src/RepoAssistant.Application
+dotnet sln add src/RepoAssistant.Infrastructure
+dotnet sln add src/RepoAssistant.Api
+
+dotnet add src/RepoAssistant.Application reference src/RepoAssistant.Domain
+dotnet add src/RepoAssistant.Infrastructure reference src/RepoAssistant.Application
+dotnet add src/RepoAssistant.Api reference src/RepoAssistant.Infrastructure
+
+dotnet add src/RepoAssistant.Application package Microsoft.Extensions.Options.ConfigurationExtensions
+dotnet add src/RepoAssistant.Application package Microsoft.Extensions.Logging.Abstractions
+dotnet add src/RepoAssistant.Infrastructure package Microsoft.SemanticKernel
+dotnet add src/RepoAssistant.Infrastructure package Microsoft.Extensions.Http
+dotnet add src/RepoAssistant.Infrastructure package Microsoft.Extensions.Caching.Memory
+
+Then delete these generated files: Class1.cs in the three class libraries, and WeatherForecast.cs plus Controllers/WeatherForecastController.cs in the Api project.
+
+Part 4: Backend code
+Domain layer
+
+src/RepoAssistant.Domain/Entities/RepositoryReference.cs
+
+csharp
+using System.Text.RegularExpressions;
+using RepoAssistant.Domain.Exceptions;
+
+namespace RepoAssistant.Domain.Entities;
+
+/// <summary>Identifies a GitHub repository (owner + name).</summary>
+public sealed partial record RepositoryReference(string Owner, string Name)
+{
+    public static RepositoryReference Parse(string? input)
+    {
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            throw new InvalidInputException("Repository URL is required.");
+        }
+
+        var match = GitHubUrlRegex().Match(input.Trim());
+        if (!match.Success)
+        {
+            throw new InvalidInputException(
+                "Enter a valid GitHub repository, e.g. https://github.com/owner/repo or owner/repo.");
+        }
+
+        return new RepositoryReference(match.Groups["owner"].Value, match.Groups["repo"].Value);
+    }
+
+    public override string ToString() => $"{Owner}/{Name}";
+
+    [GeneratedRegex(@"^(?:https?://)?(?:www\.)?(?:github\.com/)?(?<owner>[A-Za-z0-9-]+)/(?<repo>[A-Za-z0-9._-]+?)(?:\.git)?/?(?:[/?#].*)?$")]
+    private static partial Regex GitHubUrlRegex();
+}
+
+src/RepoAssistant.Domain/Entities/RepositoryMetadata.cs
+
+csharp
+namespace RepoAssistant.Domain.Entities;
+
+public sealed record RepositoryMetadata(
+    string Owner,
+    string Name,
+    string? Description,
+    string DefaultBranch,
+    string? PrimaryLanguage,
+    int Stars,
+    string HtmlUrl);
+
+src/RepoAssistant.Domain/Entities/RepositoryFile.cs
+
+csharp
+namespace RepoAssistant.Domain.Entities;
+
+public sealed record RepositoryFile(string Path, long Size);
+
+src/RepoAssistant.Domain/Exceptions/DomainExceptions.cs
+
+csharp
+namespace RepoAssistant.Domain.Exceptions;
+
+/// <summary>Base type for expected, user-facing errors.</summary>
+public abstract class DomainException(string message) : Exception(message);
+
+public sealed class InvalidInputException(string message) : DomainException(message);
+
+public sealed class NotFoundException(string message) : DomainException(message);
+
+public sealed class RateLimitExceededException(string message) : DomainException(message);
+
+public sealed class ExternalServiceException(string message) : DomainException(message);
+Application layer
+
+src/RepoAssistant.Application/Abstractions/IGitHubClient.cs
+
+csharp
+using RepoAssistant.Domain.Entities;
+
+namespace RepoAssistant.Application.Abstractions;
+
+public interface IGitHubClient
+{
+    Task<RepositoryMetadata> GetMetadataAsync(RepositoryReference repository, CancellationToken ct = default);
+
+    Task<IReadOnlyList<RepositoryFile>> GetFileTreeAsync(RepositoryReference repository, string branch, CancellationToken ct = default);
+
+    Task<IReadOnlyDictionary<string, long>> GetLanguagesAsync(RepositoryReference repository, CancellationToken ct = default);
+
+    Task<string> GetFileContentAsync(RepositoryReference repository, string branch, string path, CancellationToken ct = default);
+}
+
+src/RepoAssistant.Application/Abstractions/ILanguageModel.cs
+
+csharp
+namespace RepoAssistant.Application.Abstractions;
+
+/// <summary>Simple one-shot LLM completion (no tools).</summary>
+public interface ILanguageModel
+{
+    Task<string> CompleteAsync(string systemPrompt, string userPrompt, CancellationToken ct = default);
+}
+
+src/RepoAssistant.Application/Abstractions/IRepositoryAgent.cs
+
+csharp
+using RepoAssistant.Application.Dtos;
+using RepoAssistant.Application.Models;
+
+namespace RepoAssistant.Application.Abstractions;
+
+/// <summary>Tool-using AI agent that can explore a repository to answer questions.</summary>
+public interface IRepositoryAgent
+{
+    Task<string> ChatAsync(RepositoryContext context, IReadOnlyList<ChatMessageDto> messages, CancellationToken ct = default);
+}
+
+src/RepoAssistant.Application/Common/AnalysisOptions.cs
+
+csharp
+namespace RepoAssistant.Application.Common;
+
+/// <summary>Limits that keep prompts within free-tier token budgets.</summary>
+public sealed class AnalysisOptions
+{
+    public const string SectionName = "Analysis";
+
+    public int MaxTreeEntries { get; set; } = 300;
+    public int MaxKeyFiles { get; set; } = 6;
+    public int MaxCharsPerKeyFile { get; set; } = 2500;
+    public int MaxFileChars { get; set; } = 15000;
+    public int MaxChatHistory { get; set; } = 10;
+}
+
+src/RepoAssistant.Application/Common/ChatRoles.cs
+
+csharp
+namespace RepoAssistant.Application.Common;
+
+public static class ChatRoles
+{
+    public const string User = "user";
+    public const string Assistant = "assistant";
+}
+
+src/RepoAssistant.Application/Common/RepositoryFileFilters.cs
+
+csharp
+namespace RepoAssistant.Application.Common;
+
+public static class RepositoryFileFilters
+{
+    private static readonly HashSet<string> IgnoredFolders = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "node_modules", "bin", "obj", ".git", "dist", "build", "out", ".vs", ".idea",
+        "vendor", "__pycache__", ".next", "coverage", "packages", ".angular"
+    };
+
+    private static readonly HashSet<string> BinaryExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp", ".bmp", ".pdf", ".zip", ".gz", ".tar",
+        ".exe", ".dll", ".so", ".dylib", ".jar", ".class", ".pyc", ".pdb", ".woff", ".woff2",
+        ".ttf", ".eot", ".otf", ".mp3", ".mp4", ".mov", ".avi", ".bin", ".snk", ".db", ".sqlite"
+    };
+
+    private static readonly HashSet<string> KeyFileNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "README.md", "package.json", "angular.json", "pom.xml", "build.gradle", "requirements.txt",
+        "pyproject.toml", "go.mod", "Cargo.toml", "Dockerfile", "docker-compose.yml",
+        "docker-compose.yaml", "Program.cs", "Startup.cs", "main.py", "app.py", "main.ts", "Makefile"
+    };
+
+    private static readonly HashSet<string> KeyFileExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".sln", ".slnx", ".csproj"
+    };
+
+    public static bool IsIgnored(string path) =>
+        path.Split('/').Any(IgnoredFolders.Contains);
+
+    public static bool IsBinary(string path) =>
+        BinaryExtensions.Contains(Path.GetExtension(path));
+
+    public static bool IsKeyFile(string path) =>
+        KeyFileNames.Contains(Path.GetFileName(path)) || KeyFileExtensions.Contains(Path.GetExtension(path));
+
+    public static bool IsReadme(string path) =>
+        Path.GetFileName(path).Equals("README.md", StringComparison.OrdinalIgnoreCase);
+
+    public static int Depth(string path) => path.Count(c => c == '/');
+}
+
+src/RepoAssistant.Application/Dtos/RequestDtos.cs
+
+csharp
+using System.ComponentModel.DataAnnotations;
+
+namespace RepoAssistant.Application.Dtos;
+
+public sealed record RepositoryRequest(
+    [Required, MaxLength(300)] string RepoUrl);
+
+public sealed record ExplainFileRequest(
+    [Required, MaxLength(300)] string RepoUrl,
+    [Required, MaxLength(500)] string FilePath);
+
+public sealed record ChatMessageDto(
+    [Required, RegularExpression("^(user|assistant)$")] string Role,
+    [Required, MaxLength(8000)] string Content);
+
+public sealed record ChatRequest(
+    [Required, MaxLength(300)] string RepoUrl,
+    [Required, MinLength(1), MaxLength(50)] List<ChatMessageDto> Messages);
+
+src/RepoAssistant.Application/Dtos/ResponseDtos.cs
+
+csharp
+namespace RepoAssistant.Application.Dtos;
+
+public sealed record RepositoryFileDto(string Path, long Size);
+
+public sealed record RepositoryOverviewDto(
+    string Owner,
+    string Name,
+    string? Description,
+    string DefaultBranch,
+    string? PrimaryLanguage,
+    int Stars,
+    string HtmlUrl,
+    IReadOnlyDictionary<string, long> Languages,
+    IReadOnlyList<RepositoryFileDto> Files);
+
+public sealed record AnalysisResultDto(string Markdown);
+
+public sealed record ChatResponseDto(string Reply);
+
+src/RepoAssistant.Application/Models/RepositoryContext.cs
+
+csharp
+using RepoAssistant.Domain.Entities;
+
+namespace RepoAssistant.Application.Models;
+
+/// <summary>Everything the agent needs to explore one repository.</summary>
+public sealed record RepositoryContext(
+    RepositoryReference Repository,
+    string Branch,
+    IReadOnlyList<RepositoryFile> Files);
+
+src/RepoAssistant.Application/Prompts/PromptTemplates.cs
+
+csharp
+using RepoAssistant.Application.Models;
+
+namespace RepoAssistant.Application.Prompts;
+
+public static class PromptTemplates
+{
+    public const string ArchitectureSystemPrompt = """
+        You are a senior software architect reviewing a GitHub repository.
+        Explain its architecture clearly for a developer who is new to the codebase.
+        Base every statement on the file tree and file contents provided. If something is a guess, say so.
+
+        Respond in Markdown using exactly these sections:
+        ## Overview
+        ## Tech Stack
+        ## Architecture Pattern
+        ## Folder Structure
+        ## Key Components
+        ## Request / Data Flow
+        ## How to Run
+        ## Observations & Suggestions
+        """;
+
+    public const string FileExplanationSystemPrompt = """
+        You are a senior developer explaining a source file to a teammate who is new to the project.
+        Be accurate and concise. Do not invent behaviour that is not in the code.
+
+        Respond in Markdown using these sections:
+        ## Purpose
+        ## Key Parts
+        (the main classes, functions or configuration blocks and what each does)
+        ## How It Fits In
+        (how this file likely connects to the rest of the repository)
+        ## Dependencies
+        ## Things to Watch Out For
+        """;
+
+    public static string BuildAgentSystemPrompt(RepositoryContext context) => $"""
+        You are an assistant that answers questions about the GitHub repository {context.Repository} (branch: {context.Branch}).
+        The repository contains {context.Files.Count} files.
+
+        You have tools to search for files, list folders and read files. Rules:
+        - Never guess file paths. Use search_files or list_directory to find exact paths first.
+        - Read the relevant files before explaining any code.
+        - Mention file paths in `backticks` so the user can find them.
+        - If you cannot find something, say so honestly.
+
+        Keep answers concise and format them in Markdown.
+        """;
+}
+
+src/RepoAssistant.Application/Services/IRepositoryAnalysisService.cs
+
+csharp
+using RepoAssistant.Application.Dtos;
+
+namespace RepoAssistant.Application.Services;
+
+public interface IRepositoryAnalysisService
+{
+    Task<RepositoryOverviewDto> GetOverviewAsync(string repoUrl, CancellationToken ct = default);
+
+    Task<AnalysisResultDto> AnalyzeArchitectureAsync(string repoUrl, CancellationToken ct = default);
+
+    Task<AnalysisResultDto> ExplainFileAsync(string repoUrl, string filePath, CancellationToken ct = default);
+
+    Task<ChatResponseDto> ChatAsync(string repoUrl, IReadOnlyList<ChatMessageDto> messages, CancellationToken ct = default);
+}
+
+src/RepoAssistant.Application/Services/RepositoryAnalysisService.cs
+
+csharp
+using System.Text;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using RepoAssistant.Application.Abstractions;
+using RepoAssistant.Application.Common;
+using RepoAssistant.Application.Dtos;
+using RepoAssistant.Application.Models;
+using RepoAssistant.Application.Prompts;
+using RepoAssistant.Domain.Entities;
+using RepoAssistant.Domain.Exceptions;
+
+namespace RepoAssistant.Application.Services;
+
+public sealed class RepositoryAnalysisService(
+    IGitHubClient gitHub,
+    ILanguageModel languageModel,
+    IRepositoryAgent agent,
+    IOptions<AnalysisOptions> options,
+    ILogger<RepositoryAnalysisService> logger) : IRepositoryAnalysisService
+{
+    private readonly AnalysisOptions _options = options.Value;
+
+    public async Task<RepositoryOverviewDto> GetOverviewAsync(string repoUrl, CancellationToken ct = default)
+    {
+        var snapshot = await LoadSnapshotAsync(repoUrl, ct);
+        var languages = await gitHub.GetLanguagesAsync(snapshot.Reference, ct);
+        var metadata = snapshot.Metadata;
+
+        return new RepositoryOverviewDto(
+            metadata.Owner,
+            metadata.Name,
+            metadata.Description,
+            metadata.DefaultBranch,
+            metadata.PrimaryLanguage,
+            metadata.Stars,
+            metadata.HtmlUrl,
+            languages,
+            snapshot.Files.Select(f => new RepositoryFileDto(f.Path, f.Size)).ToList());
+    }
+
+    public async Task<AnalysisResultDto> AnalyzeArchitectureAsync(string repoUrl, CancellationToken ct = default)
+    {
+        var snapshot = await LoadSnapshotAsync(repoUrl, ct);
+        var languages = await gitHub.GetLanguagesAsync(snapshot.Reference, ct);
+        var keyFiles = await ReadKeyFilesAsync(snapshot, ct);
+
+        var prompt = new StringBuilder()
+            .AppendLine($"Repository: {snapshot.Reference}")
+            .AppendLine($"Description: {snapshot.Metadata.Description ?? "n/a"}")
+            .AppendLine($"Languages (bytes of code): {string.Join(", ", languages.Select(l => $"{l.Key}={l.Value}"))}")
+            .AppendLine()
+            .AppendLine("## File tree");
+
+        // Prefer shallow paths so large repos still show their top-level structure.
+        var treeEntries = snapshot.Files
+            .Select(f => f.Path)
+            .OrderBy(RepositoryFileFilters.Depth)
+            .ThenBy(p => p, StringComparer.Ordinal)
+            .Take(_options.MaxTreeEntries)
+            .Order(StringComparer.Ordinal);
+
+        foreach (var path in treeEntries)
+        {
+            prompt.AppendLine(path);
+        }
+
+        if (snapshot.Files.Count > _options.MaxTreeEntries)
+        {
+            prompt.AppendLine($"... ({snapshot.Files.Count - _options.MaxTreeEntries} more files not shown)");
+        }
+
+        prompt.AppendLine().AppendLine("## Key files");
+        foreach (var file in keyFiles)
+        {
+            prompt.AppendLine($"### {file.Path}").AppendLine("```").AppendLine(file.Content).AppendLine("```");
+        }
+
+        logger.LogInformation(
+            "Analyzing architecture of {Repository} ({FileCount} files, {KeyFileCount} key files)",
+            snapshot.Reference, snapshot.Files.Count, keyFiles.Count);
+
+        var markdown = await languageModel.CompleteAsync(PromptTemplates.ArchitectureSystemPrompt, prompt.ToString(), ct);
+        return new AnalysisResultDto(markdown);
+    }
+
+    public async Task<AnalysisResultDto> ExplainFileAsync(string repoUrl, string filePath, CancellationToken ct = default)
+    {
+        var path = NormalizePath(filePath);
+        if (RepositoryFileFilters.IsBinary(path))
+        {
+            throw new InvalidInputException($"'{path}' is a binary file and cannot be explained.");
+        }
+
+        var snapshot = await LoadSnapshotAsync(repoUrl, ct);
+        if (!snapshot.Files.Any(f => f.Path == path))
+        {
+            throw new NotFoundException($"File '{path}' was not found in {snapshot.Reference}.");
+        }
+
+        var content = await gitHub.GetFileContentAsync(snapshot.Reference, snapshot.Metadata.DefaultBranch, path, ct);
+
+        var prompt = new StringBuilder()
+            .AppendLine($"Repository: {snapshot.Reference}")
+            .AppendLine($"File: {path}");
+
+        if (content.Length > _options.MaxFileChars)
+        {
+            prompt.AppendLine($"Note: the file is long; only the first {_options.MaxFileChars} characters are shown.");
+        }
+
+        prompt.AppendLine().AppendLine("```").AppendLine(Truncate(content, _options.MaxFileChars)).AppendLine("```");
+
+        logger.LogInformation("Explaining {Path} in {Repository}", path, snapshot.Reference);
+        var markdown = await languageModel.CompleteAsync(PromptTemplates.FileExplanationSystemPrompt, prompt.ToString(), ct);
+        return new AnalysisResultDto(markdown);
+    }
+
+    public async Task<ChatResponseDto> ChatAsync(string repoUrl, IReadOnlyList<ChatMessageDto> messages, CancellationToken ct = default)
+    {
+        if (messages.Count == 0 || messages[^1].Role != ChatRoles.User)
+        {
+            throw new InvalidInputException("The last message must be from the user.");
+        }
+
+        var snapshot = await LoadSnapshotAsync(repoUrl, ct);
+        var context = new RepositoryContext(snapshot.Reference, snapshot.Metadata.DefaultBranch, snapshot.Files);
+        var recentMessages = messages.TakeLast(_options.MaxChatHistory).ToList();
+
+        var reply = await agent.ChatAsync(context, recentMessages, ct);
+        return new ChatResponseDto(reply);
+    }
+
+    private async Task<RepositorySnapshot> LoadSnapshotAsync(string repoUrl, CancellationToken ct)
+    {
+        var reference = RepositoryReference.Parse(repoUrl);
+        var metadata = await gitHub.GetMetadataAsync(reference, ct);
+        var files = (await gitHub.GetFileTreeAsync(reference, metadata.DefaultBranch, ct))
+            .Where(f => !RepositoryFileFilters.IsIgnored(f.Path))
+            .ToList();
+
+        return new RepositorySnapshot(reference, metadata, files);
+    }
+
+    private async Task<IReadOnlyList<KeyFile>> ReadKeyFilesAsync(RepositorySnapshot snapshot, CancellationToken ct)
+    {
+        var candidates = snapshot.Files
+            .Where(f => RepositoryFileFilters.IsKeyFile(f.Path))
+            .OrderBy(f => RepositoryFileFilters.Depth(f.Path))
+            .ThenByDescending(f => RepositoryFileFilters.IsReadme(f.Path))
+            .ThenBy(f => f.Path, StringComparer.OrdinalIgnoreCase)
+            .Take(_options.MaxKeyFiles);
+
+        var results = await Task.WhenAll(candidates.Select(ReadAsync));
+        return results.OfType<KeyFile>().ToList();
+
+        async Task<KeyFile?> ReadAsync(RepositoryFile file)
+        {
+            try
+            {
+                var content = await gitHub.GetFileContentAsync(snapshot.Reference, snapshot.Metadata.DefaultBranch, file.Path, ct);
+                return new KeyFile(file.Path, Truncate(content, _options.MaxCharsPerKeyFile));
+            }
+            catch (DomainException ex)
+            {
+                logger.LogWarning("Skipping key file {Path}: {Message}", file.Path, ex.Message);
+                return null;
+            }
+        }
+    }
+
+    private static string NormalizePath(string path) =>
+        path.Trim().Replace('\\', '/').TrimStart('/');
+
+    private static string Truncate(string value, int maxLength) =>
+        value.Length <= maxLength ? value : value[..maxLength] + "\n... [truncated]";
+
+    private sealed record RepositorySnapshot(
+        RepositoryReference Reference,
+        RepositoryMetadata Metadata,
+        IReadOnlyList<RepositoryFile> Files);
+
+    private sealed record KeyFile(string Path, string Content);
+}
+
+src/RepoAssistant.Application/DependencyInjection.cs
+
+csharp
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using RepoAssistant.Application.Common;
+using RepoAssistant.Application.Services;
+
+namespace RepoAssistant.Application;
+
+public static class DependencyInjection
+{
+    public static IServiceCollection AddApplication(this IServiceCollection services, IConfiguration configuration)
+    {
+        services.AddOptions<AnalysisOptions>().Bind(configuration.GetSection(AnalysisOptions.SectionName));
+        services.AddScoped<IRepositoryAnalysisService, RepositoryAnalysisService>();
+        return services;
+    }
+}
+Infrastructure layer
+
+src/RepoAssistant.Infrastructure/GitHub/GitHubOptions.cs
+
+csharp
+namespace RepoAssistant.Infrastructure.GitHub;
+
+public sealed class GitHubOptions
+{
+    public const string SectionName = "GitHub";
+
+    public string BaseUrl { get; set; } = "https://api.github.com/";
+    public string? Token { get; set; }
+    public int CacheMinutes { get; set; } = 10;
+}
+
+src/RepoAssistant.Infrastructure/GitHub/GitHubApiModels.cs
+
+csharp
+namespace RepoAssistant.Infrastructure.GitHub;
+
+// Shapes of the GitHub REST API responses (only the fields we use).
+internal sealed record GitHubRepositoryResponse(
+    string Name,
+    string? Description,
+    string DefaultBranch,
+    string? Language,
+    int StargazersCount,
+    string HtmlUrl,
+    GitHubOwner Owner);
+
+internal sealed record GitHubOwner(string Login);
+
+internal sealed record GitHubTreeResponse(List<GitHubTreeItem> Tree, bool Truncated);
+
+internal sealed record GitHubTreeItem(string Path, string Type, long? Size);
+
+src/RepoAssistant.Infrastructure/GitHub/GitHubClient.cs
+
+csharp
+using System.Net;
+using System.Net.Http.Json;
+using System.Text.Json;
+using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using RepoAssistant.Application.Abstractions;
+using RepoAssistant.Domain.Entities;
+using RepoAssistant.Domain.Exceptions;
+
+namespace RepoAssistant.Infrastructure.GitHub;
+
+internal sealed class GitHubClient(
+    HttpClient httpClient,
+    IMemoryCache cache,
+    IOptions<GitHubOptions> options,
+    ILogger<GitHubClient> logger) : IGitHubClient
+{
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower
+    };
+
+    private readonly TimeSpan _cacheDuration = TimeSpan.FromMinutes(options.Value.CacheMinutes);
+
+    public Task<RepositoryMetadata> GetMetadataAsync(RepositoryReference repository, CancellationToken ct = default) =>
+        GetOrCreateCachedAsync(CacheKey(repository, "metadata"), async () =>
+        {
+            var response = await GetJsonAsync<GitHubRepositoryResponse>(
+                $"repos/{repository.Owner}/{repository.Name}", ct);
+
+            return new RepositoryMetadata(
+                response.Owner.Login,
+                response.Name,
+                response.Description,
+                response.DefaultBranch,
+                response.Language,
+                response.StargazersCount,
+                response.HtmlUrl);
+        });
+
+    public Task<IReadOnlyList<RepositoryFile>> GetFileTreeAsync(RepositoryReference repository, string branch, CancellationToken ct = default) =>
+        GetOrCreateCachedAsync(CacheKey(repository, $"tree:{branch}"), async () =>
+        {
+            var response = await GetJsonAsync<GitHubTreeResponse>(
+                $"repos/{repository.Owner}/{repository.Name}/git/trees/{Uri.EscapeDataString(branch)}?recursive=1", ct);
+
+            if (response.Truncated)
+            {
+                logger.LogWarning("GitHub truncated the file tree for {Repository} (very large repository)", repository);
+            }
+
+            IReadOnlyList<RepositoryFile> files = response.Tree
+                .Where(item => item.Type == "blob")
+                .Select(item => new RepositoryFile(item.Path, item.Size ?? 0))
+                .ToList();
+
+            return files;
+        });
+
+    public Task<IReadOnlyDictionary<string, long>> GetLanguagesAsync(RepositoryReference repository, CancellationToken ct = default) =>
+        GetOrCreateCachedAsync(CacheKey(repository, "languages"), async () =>
+        {
+            IReadOnlyDictionary<string, long> languages = await GetJsonAsync<Dictionary<string, long>>(
+                $"repos/{repository.Owner}/{repository.Name}/languages", ct);
+
+            return languages;
+        });
+
+    public Task<string> GetFileContentAsync(RepositoryReference repository, string branch, string path, CancellationToken ct = default) =>
+        GetOrCreateCachedAsync(CacheKey(repository, $"content:{branch}:{path}"), async () =>
+        {
+            var encodedPath = string.Join('/', path.Split('/').Select(Uri.EscapeDataString));
+            using var request = new HttpRequestMessage(
+                HttpMethod.Get,
+                $"repos/{repository.Owner}/{repository.Name}/contents/{encodedPath}?ref={Uri.EscapeDataString(branch)}");
+
+            // Ask GitHub for the raw file instead of base64 JSON.
+            request.Headers.Accept.ParseAdd("application/vnd.github.raw+json");
+
+            using var response = await SendAsync(request, ct);
+            return await response.Content.ReadAsStringAsync(ct);
+        });
+
+    private async Task<T> GetOrCreateCachedAsync<T>(string key, Func<Task<T>> factory)
+    {
+        if (cache.TryGetValue(key, out T? cached) && cached is not null)
+        {
+            return cached;
+        }
+
+        var value = await factory();
+        cache.Set(key, value, _cacheDuration);
+        return value;
+    }
+
+    private async Task<T> GetJsonAsync<T>(string url, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        using var response = await SendAsync(request, ct);
+
+        return await response.Content.ReadFromJsonAsync<T>(JsonOptions, ct)
+               ?? throw new ExternalServiceException("GitHub returned an empty response.");
+    }
+
+    private async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+    {
+        HttpResponseMessage response;
+        try
+        {
+            response = await httpClient.SendAsync(request, ct);
+        }
+        catch (HttpRequestException ex)
+        {
+            logger.LogError(ex, "Could not reach GitHub");
+            throw new ExternalServiceException("Could not reach GitHub. Check your internet connection.");
+        }
+
+        if (response.IsSuccessStatusCode)
+        {
+            return response;
+        }
+
+        var status = response.StatusCode;
+        var isRateLimited = status == HttpStatusCode.TooManyRequests ||
+            (status == HttpStatusCode.Forbidden &&
+             response.Headers.TryGetValues("x-ratelimit-remaining", out var remaining) &&
+             remaining.FirstOrDefault() == "0");
+
+        response.Dispose();
+
+        throw status switch
+        {
+            _ when isRateLimited => new RateLimitExceededException(
+                "GitHub API rate limit reached. Add a GitHub token (GitHub:Token) or try again later."),
+            HttpStatusCode.NotFound => new NotFoundException(
+                "Repository or file not found. Check the URL and make sure the repository is public."),
+            HttpStatusCode.Unauthorized => new ExternalServiceException(
+                "GitHub rejected the token. Check GitHub:Token in your user secrets."),
+            _ => new ExternalServiceException($"GitHub API returned status {(int)status}.")
+        };
+    }
+
+    private static string CacheKey(RepositoryReference repository, string suffix) =>
+        $"github:{repository.ToString().ToLowerInvariant()}:{suffix}";
+}
+
+src/RepoAssistant.Infrastructure/AI/LlmOptions.cs
+
+csharp
+namespace RepoAssistant.Infrastructure.AI;
+
+public sealed class LlmOptions
+{
+    public const string SectionName = "Llm";
+
+    /// <summary>Any OpenAI-compatible endpoint (Groq, OpenRouter, ...).</summary>
+    public string BaseUrl { get; set; } = "https://api.groq.com/openai/v1";
+    public string ApiKey { get; set; } = string.Empty;
+    public string Model { get; set; } = "llama-3.3-70b-versatile";
+    public double Temperature { get; set; } = 0.2;
+    public int MaxTokens { get; set; } = 2048;
+}
+
+src/RepoAssistant.Infrastructure/AI/LlmErrorMapper.cs
+
+csharp
+using System.Net;
+using Microsoft.SemanticKernel;
+using RepoAssistant.Domain.Exceptions;
+
+namespace RepoAssistant.Infrastructure.AI;
+
+/// <summary>Turns raw LLM provider errors into friendly domain exceptions.</summary>
+internal static class LlmErrorMapper
+{
+    public static async Task<T> ExecuteAsync<T>(Func<Task<T>> action)
+    {
+        try
+        {
+            return await action();
+        }
+        catch (HttpOperationException ex) when (ex.StatusCode == HttpStatusCode.TooManyRequests)
+        {
+            throw new RateLimitExceededException(
+                "The AI provider's free-tier rate limit was reached. Wait a minute and try again.");
+        }
+        catch (HttpOperationException ex) when (ex.StatusCode == HttpStatusCode.RequestEntityTooLarge)
+        {
+            throw new ExternalServiceException(
+                "The request was too large for the free tier. Lower the limits in the 'Analysis' settings.");
+        }
+        catch (HttpOperationException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized)
+        {
+            throw new ExternalServiceException("The AI provider rejected the API key. Check Llm:ApiKey.");
+        }
+        catch (HttpOperationException ex)
+        {
+            throw new ExternalServiceException($"AI provider error: {ex.Message}");
+        }
+    }
+}
+
+src/RepoAssistant.Infrastructure/AI/SemanticKernelLanguageModel.cs
+
+csharp
+using Microsoft.Extensions.Options;
+using Microsoft.SemanticKernel;
+using Microsoft.SemanticKernel.ChatCompletion;
+using Microsoft.SemanticKernel.Connectors.OpenAI;
+using RepoAssistant.Application.Abstractions;
+
+namespace RepoAssistant.Infrastructure.AI;
+
+internal sealed class SemanticKernelLanguageModel(Kernel kernel, IOptions<LlmOptions> options) : ILanguageModel
+{
+    public async Task<string> CompleteAsync(string systemPrompt, string userPrompt, CancellationToken ct = default)
+    {
+        var chat = kernel.GetRequiredService<IChatCompletionService>();
+
+        var history = new ChatHistory(systemPrompt);
+        history.AddUserMessage(userPrompt);
+
+        var settings = new OpenAIPromptExecutionSettings
+        {
+            Temperature = options.Value.Temperature,
+            MaxTokens = options.Value.MaxTokens
+        };
+
+        var result = await LlmErrorMapper.ExecuteAsync(
+            () => chat.GetChatMessageContentAsync(history, settings, kernel, ct));
+
+        return result.Content ?? string.Empty;
+    }
+}
+
+src/RepoAssistant.Infrastructure/AI/Plugins/RepositoryPlugin.cs
+
+csharp
+using System.ComponentModel;
+using Microsoft.Extensions.Logging;
+using Microsoft.SemanticKernel;
+using RepoAssistant.Application.Abstractions;
+using RepoAssistant.Application.Common;
+using RepoAssistant.Application.Models;
+using RepoAssistant.Domain.Exceptions;
+
+namespace RepoAssistant.Infrastructure.AI.Plugins;
+
+/// <summary>Tools the AI agent can call on its own to explore a repository.</summary>
+internal sealed class RepositoryPlugin(RepositoryContext context, IGitHubClient gitHub, ILogger logger)
+{
+    private const int MaxSearchResults = 50;
+    private const int MaxDirectoryEntries = 100;
+    private const int MaxFileChars = 8000;
+
+    [KernelFunction("search_files")]
+    [Description("Searches the repository for files whose path contains a keyword (case-insensitive). Use it to locate files by name, folder or extension.")]
+    public string SearchFiles(
+        [Description("Keyword such as 'auth', 'controller', '.csproj' or 'src/services'")] string keyword)
+    {
+        logger.LogInformation("Agent tool search_files({Keyword})", keyword);
+
+        var matches = context.Files
+            .Where(f => f.Path.Contains(keyword, StringComparison.OrdinalIgnoreCase))
+            .Take(MaxSearchResults)
+            .Select(f => f.Path)
+            .ToList();
+
+        return matches.Count == 0
+            ? $"No files found matching '{keyword}'."
+            : string.Join('\n', matches);
+    }
+
+    [KernelFunction("list_directory")]
+    [Description("Lists the files and sub-folders directly inside a folder. Use an empty string for the repository root.")]
+    public string ListDirectory(
+        [Description("Folder path such as 'src', or '' for the root")] string folderPath)
+    {
+        logger.LogInformation("Agent tool list_directory({Folder})", folderPath);
+
+        var prefix = string.IsNullOrWhiteSpace(folderPath) ? string.Empty : folderPath.Trim('/') + "/";
+
+        var entries = context.Files
+            .Where(f => f.Path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            .Select(f =>
+            {
+                var rest = f.Path[prefix.Length..];
+                var slash = rest.IndexOf('/');
+                return slash < 0 ? rest : rest[..(slash + 1)]; // folders end with '/'
+            })
+            .Distinct()
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .Take(MaxDirectoryEntries)
+            .ToList();
+
+        return entries.Count == 0
+            ? $"Folder '{folderPath}' was not found or is empty."
+            : string.Join('\n', entries);
+    }
+
+    [KernelFunction("read_file")]
+    [Description("Reads the content of a file. Always use an exact path returned by search_files or list_directory.")]
+    public async Task<string> ReadFileAsync(
+        [Description("Exact file path, e.g. 'src/Program.cs'")] string path,
+        CancellationToken ct)
+    {
+        logger.LogInformation("Agent tool read_file({Path})", path);
+
+        var normalized = path.Trim().TrimStart('/');
+        if (!context.Files.Any(f => f.Path == normalized))
+        {
+            return $"File '{path}' does not exist. Use search_files to find the exact path.";
+        }
+
+        if (RepositoryFileFilters.IsBinary(normalized))
+        {
+            return "This is a binary file and cannot be read.";
+        }
+
+        try
+        {
+            var content = await gitHub.GetFileContentAsync(context.Repository, context.Branch, normalized, ct);
+            return content.Length <= MaxFileChars ? content : content[..MaxFileChars] + "\n... [truncated]";
+        }
+        catch (DomainException ex)
+        {
+            return $"Could not read the file: {ex.Message}";
+        }
+    }
+}
+
+src/RepoAssistant.Infrastructure/AI/SemanticKernelRepositoryAgent.cs
+
+csharp
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using Microsoft.SemanticKernel;
+using Microsoft.SemanticKernel.ChatCompletion;
+using Microsoft.SemanticKernel.Connectors.OpenAI;
+using RepoAssistant.Application.Abstractions;
+using RepoAssistant.Application.Common;
+using RepoAssistant.Application.Dtos;
+using RepoAssistant.Application.Models;
+using RepoAssistant.Application.Prompts;
+using RepoAssistant.Infrastructure.AI.Plugins;
+
+namespace RepoAssistant.Infrastructure.AI;
+
+internal sealed class SemanticKernelRepositoryAgent(
+    Kernel kernel,
+    IGitHubClient gitHub,
+    IOptions<LlmOptions> options,
+    ILoggerFactory loggerFactory) : IRepositoryAgent
+{
+    public async Task<string> ChatAsync(RepositoryContext context, IReadOnlyList<ChatMessageDto> messages, CancellationToken ct = default)
+    {
+        // Clone so each request gets its own plugin bound to its own repository.
+        var agentKernel = kernel.Clone();
+        agentKernel.Plugins.AddFromObject(
+            new RepositoryPlugin(context, gitHub, loggerFactory.CreateLogger<RepositoryPlugin>()),
+            "repository");
+
+        var history = new ChatHistory(PromptTemplates.BuildAgentSystemPrompt(context));
+        foreach (var message in messages)
+        {
+            if (message.Role == ChatRoles.Assistant)
+            {
+                history.AddAssistantMessage(message.Content);
+            }
+            else
+            {
+                history.AddUserMessage(message.Content);
+            }
+        }
+
+        var settings = new OpenAIPromptExecutionSettings
+        {
+            // The model decides which tools to call; Semantic Kernel runs them automatically.
+            FunctionChoiceBehavior = FunctionChoiceBehavior.Auto(),
+            Temperature = options.Value.Temperature,
+            MaxTokens = options.Value.MaxTokens
+        };
+
+        var chat = agentKernel.GetRequiredService<IChatCompletionService>();
+        var result = await LlmErrorMapper.ExecuteAsync(
+            () => chat.GetChatMessageContentAsync(history, settings, agentKernel, ct));
+
+        return string.IsNullOrWhiteSpace(result.Content)
+            ? "I couldn't produce an answer. Please try rephrasing your question."
+            : result.Content;
+    }
+}
+
+src/RepoAssistant.Infrastructure/DependencyInjection.cs
+
+csharp
+using System.Net.Http.Headers;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
+using Microsoft.SemanticKernel;
+using RepoAssistant.Application.Abstractions;
+using RepoAssistant.Infrastructure.AI;
+using RepoAssistant.Infrastructure.GitHub;
+
+namespace RepoAssistant.Infrastructure;
+
+public static class DependencyInjection
+{
+    public static IServiceCollection AddInfrastructure(this IServiceCollection services, IConfiguration configuration)
+    {
+        services.AddMemoryCache();
+
+        services.AddOptions<GitHubOptions>()
+            .Bind(configuration.GetSection(GitHubOptions.SectionName));
+
+        services.AddOptions<LlmOptions>()
+            .Bind(configuration.GetSection(LlmOptions.SectionName))
+            .Validate(o => !string.IsNullOrWhiteSpace(o.ApiKey),
+                "Llm:ApiKey is missing. Run: dotnet user-secrets set \"Llm:ApiKey\" \"<your-key>\"")
+            .ValidateOnStart();
+
+        services.AddHttpClient<IGitHubClient, GitHubClient>((sp, client) =>
+        {
+            var gitHub = sp.GetRequiredService<IOptions<GitHubOptions>>().Value;
+            client.BaseAddress = new Uri(gitHub.BaseUrl);
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("RepoAssistant/1.0");
+            client.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
+            client.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2022-11-28");
+
+            if (!string.IsNullOrWhiteSpace(gitHub.Token))
+            {
+                client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", gitHub.Token);
+            }
+        });
+
+        services.AddSingleton(sp =>
+        {
+            var llm = sp.GetRequiredService<IOptions<LlmOptions>>().Value;
+            var builder = Kernel.CreateBuilder();
+
+#pragma warning disable SKEXP0010 // Custom OpenAI-compatible endpoint overload is marked experimental
+            builder.AddOpenAIChatCompletion(
+                modelId: llm.Model,
+                endpoint: new Uri(llm.BaseUrl),
+                apiKey: llm.ApiKey);
+#pragma warning restore SKEXP0010
+
+            return builder.Build();
+        });
+
+        services.AddScoped<ILanguageModel, SemanticKernelLanguageModel>();
+        services.AddScoped<IRepositoryAgent, SemanticKernelRepositoryAgent>();
+
+        return services;
+    }
+}
+API layer
+
+src/RepoAssistant.Api/Controllers/RepositoryController.cs
+
+csharp
+using Microsoft.AspNetCore.Mvc;
+using RepoAssistant.Application.Dtos;
+using RepoAssistant.Application.Services;
+
+namespace RepoAssistant.Api.Controllers;
+
+[ApiController]
+[Route("api/repository")]
+[Produces("application/json")]
+public sealed class RepositoryController(IRepositoryAnalysisService analysisService) : ControllerBase
+{
+    /// <summary>Loads repository metadata and its file list.</summary>
+    [HttpPost("overview")]
+    public async Task<ActionResult<RepositoryOverviewDto>> GetOverview(RepositoryRequest request, CancellationToken ct) =>
+        Ok(await analysisService.GetOverviewAsync(request.RepoUrl, ct));
+
+    /// <summary>Uses AI to describe the repository's architecture.</summary>
+    [HttpPost("architecture")]
+    public async Task<ActionResult<AnalysisResultDto>> AnalyzeArchitecture(RepositoryRequest request, CancellationToken ct) =>
+        Ok(await analysisService.AnalyzeArchitectureAsync(request.RepoUrl, ct));
+
+    /// <summary>Uses AI to explain a single file.</summary>
+    [HttpPost("explain-file")]
+    public async Task<ActionResult<AnalysisResultDto>> ExplainFile(ExplainFileRequest request, CancellationToken ct) =>
+        Ok(await analysisService.ExplainFileAsync(request.RepoUrl, request.FilePath, ct));
+
+    /// <summary>Chats with a tool-using agent that can search and read repository files.</summary>
+    [HttpPost("chat")]
+    public async Task<ActionResult<ChatResponseDto>> Chat(ChatRequest request, CancellationToken ct) =>
+        Ok(await analysisService.ChatAsync(request.RepoUrl, request.Messages, ct));
+}
+
+src/RepoAssistant.Api/ExceptionHandling/GlobalExceptionHandler.cs
+
+csharp
+using Microsoft.AspNetCore.Diagnostics;
+using Microsoft.AspNetCore.Mvc;
+using RepoAssistant.Domain.Exceptions;
+
+namespace RepoAssistant.Api.ExceptionHandling;
+
+/// <summary>Converts exceptions into consistent ProblemDetails JSON responses.</summary>
+internal sealed class GlobalExceptionHandler(
+    ILogger<GlobalExceptionHandler> logger,
+    IProblemDetailsService problemDetailsService) : IExceptionHandler
+{
+    public async ValueTask<bool> TryHandleAsync(HttpContext httpContext, Exception exception, CancellationToken ct)
+    {
+        var (status, title) = exception switch
+        {
+            InvalidInputException => (StatusCodes.Status400BadRequest, "Invalid request"),
+            NotFoundException => (StatusCodes.Status404NotFound, "Not found"),
+            RateLimitExceededException => (StatusCodes.Status429TooManyRequests, "Rate limit exceeded"),
+            ExternalServiceException => (StatusCodes.Status502BadGateway, "External service error"),
+            OperationCanceledException => (499, "Request cancelled"),
+            _ => (StatusCodes.Status500InternalServerError, "Unexpected error")
+        };
+
+        if (status == StatusCodes.Status500InternalServerError)
+        {
+            logger.LogError(exception, "Unhandled exception");
+        }
+        else
+        {
+            logger.LogWarning("{Title}: {Message}", title, exception.Message);
+        }
+
+        httpContext.Response.StatusCode = status;
+
+        return await problemDetailsService.TryWriteAsync(new ProblemDetailsContext
+        {
+            HttpContext = httpContext,
+            Exception = exception,
+            ProblemDetails = new ProblemDetails
+            {
+                Status = status,
+                Title = title,
+                Detail = status == StatusCodes.Status500InternalServerError
+                    ? "Something went wrong. Please try again."
+                    : exception.Message
+            }
+        });
+    }
+}
+
+src/RepoAssistant.Api/Program.cs (replace the whole file)
+
+csharp
+using RepoAssistant.Api.ExceptionHandling;
+using RepoAssistant.Application;
+using RepoAssistant.Infrastructure;
+
+const string CorsPolicyName = "AngularClient";
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddControllers();
+builder.Services.AddOpenApi();
+builder.Services.AddProblemDetails();
+builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
+
+builder.Services.AddApplication(builder.Configuration);
+builder.Services.AddInfrastructure(builder.Configuration);
+
+var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
+                     ?? ["http://localhost:4200"];
+
+builder.Services.AddCors(options =>
+    options.AddPolicy(CorsPolicyName, policy =>
+        policy.WithOrigins(allowedOrigins).AllowAnyHeader().AllowAnyMethod()));
+
+var app = builder.Build();
+
+app.UseExceptionHandler();
+
+if (app.Environment.IsDevelopment())
+{
+    app.MapOpenApi(); // http://localhost:5080/openapi/v1.json
+}
+
+app.UseCors(CorsPolicyName);
+app.MapControllers();
+
+app.Run();
+
+src/RepoAssistant.Api/appsettings.json (replace)
+
+json
+{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning"
+    }
+  },
+  "AllowedHosts": "*",
+  "Cors": {
+    "AllowedOrigins": [ "http://localhost:4200" ]
+  },
+  "GitHub": {
+    "BaseUrl": "https://api.github.com/",
+    "Token": "",
+    "CacheMinutes": 10
+  },
+  "Llm": {
+    "BaseUrl": "https://api.groq.com/openai/v1",
+    "ApiKey": "",
+    "Model": "llama-3.3-70b-versatile",
+    "Temperature": 0.2,
+    "MaxTokens": 2048
+  },
+  "Analysis": {
+    "MaxTreeEntries": 300,
+    "MaxKeyFiles": 6,
+    "MaxCharsPerKeyFile": 2500,
+    "MaxFileChars": 15000,
+    "MaxChatHistory": 10
+  }
+}
+
+src/RepoAssistant.Api/Properties/launchSettings.json (replace)
+
+json
+{
+  "$schema": "https://json.schemastore.org/launchsettings.json",
+  "profiles": {
+    "http": {
+      "commandName": "Project",
+      "dotnetRunMessages": true,
+      "launchBrowser": false,
+      "applicationUrl": "http://localhost:5080",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      }
+    }
+  }
+}
+
+Store your keys safely (never put them in appsettings.json). Run from src/RepoAssistant.Api:
+
+bash
+dotnet user-secrets init
+dotnet user-secrets set "Llm:ApiKey" "gsk_your_groq_key"
+dotnet user-secrets set "GitHub:Token" "github_pat_your_token"
+Part 5: Frontend setup commands
+
+From the RepoAssistant root folder:
+
+bash
+mkdir client && cd client
+ng new repo-assistant-ui --style=scss --ssr=false --routing=false --skip-tests
+cd repo-assistant-ui
+npm install marked
+
+If ng new asks extra questions (such as AI tool setup), choose the default or “None”.
+
+Then delete everything inside src/app/ (the generated app.ts, app.html, and so on), and create the files below.
+
+Part 6: Frontend code
+
+src/environments/environment.ts
+
+ts
+export const environment = {
+  apiBaseUrl: 'http://localhost:5080/api',
+};
+
+src/main.ts (replace)
+
+ts
+import { bootstrapApplication } from '@angular/platform-browser';
+import { appConfig } from './app/app.config';
+import { AppComponent } from './app/app.component';
+
+bootstrapApplication(AppComponent, appConfig).catch((err) => console.error(err));
+
+src/app/app.config.ts
+
+ts
+import { ApplicationConfig, provideZonelessChangeDetection } from '@angular/core';
+import { provideHttpClient, withFetch, withInterceptors } from '@angular/common/http';
+import { apiErrorInterceptor } from './core/interceptors/api-error.interceptor';
+
+export const appConfig: ApplicationConfig = {
+  providers: [
+    provideZonelessChangeDetection(),
+    provideHttpClient(withFetch(), withInterceptors([apiErrorInterceptor])),
+  ],
+};
+
+src/app/core/models/repository.models.ts
+
+ts
+export interface RepositoryFile {
+  path: string;
+  size: number;
+}
+
+export interface RepositoryOverview {
+  owner: string;
+  name: string;
+  description: string | null;
+  defaultBranch: string;
+  primaryLanguage: string | null;
+  stars: number;
+  htmlUrl: string;
+  languages: Record<string, number>;
+  files: RepositoryFile[];
+}
+
+export interface AnalysisResult {
+  markdown: string;
+}
+
+export type ChatRole = 'user' | 'assistant';
+
+export interface ChatMessagePayload {
+  role: ChatRole;
+  content: string;
+}
+
+export interface ChatMessage extends ChatMessagePayload {
+  isError?: boolean;
+}
+
+export interface ChatResponse {
+  reply: string;
+}
+
+export interface ProblemDetails {
+  title?: string;
+  detail?: string;
+  status?: number;
+}
+
+export type AssistantTab = 'architecture' | 'file' | 'chat';
+
+src/app/core/interceptors/api-error.interceptor.ts
+
+ts
+import { HttpErrorResponse, HttpInterceptorFn } from '@angular/common/http';
+import { catchError, throwError } from 'rxjs';
+import { ProblemDetails } from '../models/repository.models';
+
+/** Converts HTTP errors into Error objects with a user-friendly message. */
+export const apiErrorInterceptor: HttpInterceptorFn = (req, next) =>
+  next(req).pipe(
+    catchError((error: HttpErrorResponse) => {
+      const problem = error.error as ProblemDetails | null;
+      const message =
+        error.status === 0
+          ? 'Cannot reach the API. Is the backend running on http://localhost:5080?'
+          : problem?.detail ?? problem?.title ?? `Request failed with status ${error.status}.`;
+
+      return throwError(() => new Error(message));
+    }),
+  );
+
+src/app/core/services/repository-api.service.ts
+
+ts
+import { HttpClient } from '@angular/common/http';
+import { Injectable, inject } from '@angular/core';
+import { Observable } from 'rxjs';
+import { environment } from '../../../environments/environment';
+import {
+  AnalysisResult,
+  ChatMessagePayload,
+  ChatResponse,
+  RepositoryOverview,
+} from '../models/repository.models';
+
+@Injectable({ providedIn: 'root' })
+export class RepositoryApiService {
+  private readonly http = inject(HttpClient);
+  private readonly baseUrl = `${environment.apiBaseUrl}/repository`;
+
+  getOverview(repoUrl: string): Observable<RepositoryOverview> {
+    return this.http.post<RepositoryOverview>(`${this.baseUrl}/overview`, { repoUrl });
+  }
+
+  analyzeArchitecture(repoUrl: string): Observable<AnalysisResult> {
+    return this.http.post<AnalysisResult>(`${this.baseUrl}/architecture`, { repoUrl });
+  }
+
+  explainFile(repoUrl: string, filePath: string): Observable<AnalysisResult> {
+    return this.http.post<AnalysisResult>(`${this.baseUrl}/explain-file`, { repoUrl, filePath });
+  }
+
+  chat(repoUrl: string, messages: ChatMessagePayload[]): Observable<ChatResponse> {
+    return this.http.post<ChatResponse>(`${this.baseUrl}/chat`, { repoUrl, messages });
+  }
+}
+
+src/app/core/state/repository.store.ts
+
+ts
+import { Injectable, computed, inject, signal } from '@angular/core';
+import { finalize } from 'rxjs';
+import { RepositoryApiService } from '../services/repository-api.service';
+import { AssistantTab, ChatMessage, RepositoryOverview } from '../models/repository.models';
+
+interface RepositoryState {
+  repoUrl: string;
+  overview: RepositoryOverview | null;
+  loadingOverview: boolean;
+  architecture: string | null;
+  loadingArchitecture: boolean;
+  selectedFile: string | null;
+  fileExplanation: string | null;
+  loadingExplanation: boolean;
+  chatMessages: ChatMessage[];
+  chatBusy: boolean;
+  activeTab: AssistantTab;
+  error: string | null;
+}
+
+const initialState: RepositoryState = {
+  repoUrl: '',
+  overview: null,
+  loadingOverview: false,
+  architecture: null,
+  loadingArchitecture: false,
+  selectedFile: null,
+  fileExplanation: null,
+  loadingExplanation: false,
+  chatMessages: [],
+  chatBusy: false,
+  activeTab: 'architecture',
+  error: null,
+};
+
+/** Single source of truth for the app, built on Angular signals. */
+@Injectable({ providedIn: 'root' })
+export class RepositoryStore {
+  private readonly api = inject(RepositoryApiService);
+  private readonly state = signal<RepositoryState>(initialState);
+
+  readonly overview = computed(() => this.state().overview);
+  readonly loadingOverview = computed(() => this.state().loadingOverview);
+  readonly architecture = computed(() => this.state().architecture);
+  readonly loadingArchitecture = computed(() => this.state().loadingArchitecture);
+  readonly selectedFile = computed(() => this.state().selectedFile);
+  readonly fileExplanation = computed(() => this.state().fileExplanation);
+  readonly loadingExplanation = computed(() => this.state().loadingExplanation);
+  readonly chatMessages = computed(() => this.state().chatMessages);
+  readonly chatBusy = computed(() => this.state().chatBusy);
+  readonly activeTab = computed(() => this.state().activeTab);
+  readonly error = computed(() => this.state().error);
+
+  loadRepository(repoUrl: string): void {
+    this.state.set({ ...initialState, repoUrl, loadingOverview: true });
+
+    this.api
+      .getOverview(repoUrl)
+      .pipe(finalize(() => this.patch({ loadingOverview: false })))
+      .subscribe({
+        next: (overview) => this.patch({ overview }),
+        error: (err: Error) => this.patch({ error: err.message }),
+      });
+  }
+
+  analyzeArchitecture(): void {
+    this.patch({ loadingArchitecture: true, error: null });
+
+    this.api
+      .analyzeArchitecture(this.state().repoUrl)
+      .pipe(finalize(() => this.patch({ loadingArchitecture: false })))
+      .subscribe({
+        next: (result) => this.patch({ architecture: result.markdown }),
+        error: (err: Error) => this.patch({ error: err.message }),
+      });
+  }
+
+  explainFile(filePath: string): void {
+    this.patch({
+      selectedFile: filePath,
+      fileExplanation: null,
+      loadingExplanation: true,
+      activeTab: 'file',
+      error: null,
+    });
+
+    this.api.explainFile(this.state().repoUrl, filePath).subscribe({
+      // Ignore late responses if the user already clicked a different file.
+      next: (result) => {
+        if (this.state().selectedFile === filePath) {
+          this.patch({ fileExplanation: result.markdown, loadingExplanation: false });
+        }
+      },
+      error: (err: Error) => {
+        if (this.state().selectedFile === filePath) {
+          this.patch({ error: err.message, loadingExplanation: false });
+        }
+      },
+    });
+  }
+
+  sendChatMessage(text: string): void {
+    const messages: ChatMessage[] = [...this.state().chatMessages, { role: 'user', content: text }];
+    this.patch({ chatMessages: messages, chatBusy: true });
+
+    const history = messages
+      .filter((m) => !m.isError)
+      .map(({ role, content }) => ({ role, content }));
+
+    this.api
+      .chat(this.state().repoUrl, history)
+      .pipe(finalize(() => this.patch({ chatBusy: false })))
+      .subscribe({
+        next: (response) => this.appendMessage({ role: 'assistant', content: response.reply }),
+        error: (err: Error) =>
+          this.appendMessage({ role: 'assistant', content: err.message, isError: true }),
+      });
+  }
+
+  selectTab(tab: AssistantTab): void {
+    this.patch({ activeTab: tab });
+  }
+
+  clearError(): void {
+    this.patch({ error: null });
+  }
+
+  private appendMessage(message: ChatMessage): void {
+    this.state.update((s) => ({ ...s, chatMessages: [...s.chatMessages, message] }));
+  }
+
+  private patch(partial: Partial<RepositoryState>): void {
+    this.state.update((s) => ({ ...s, ...partial }));
+  }
+}
+
+src/app/shared/pipes/markdown.pipe.ts
+
+ts
+import { Pipe, PipeTransform } from '@angular/core';
+import { marked } from 'marked';
+
+/** Converts Markdown to HTML. Angular's [innerHTML] binding sanitizes the result. */
+@Pipe({ name: 'markdown' })
+export class MarkdownPipe implements PipeTransform {
+  transform(value: string | null | undefined): string {
+    return value ? (marked.parse(value, { async: false }) as string) : '';
+  }
+}
+
+src/app/features/repo-search/repo-search.component.ts
+
+ts
+import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
+import { RepositoryStore } from '../../core/state/repository.store';
+
+@Component({
+  selector: 'app-repo-search',
+  templateUrl: './repo-search.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
+})
+export class RepoSearchComponent {
+  protected readonly store = inject(RepositoryStore);
+  protected readonly url = signal('');
+
+  protected submit(): void {
+    const value = this.url().trim();
+    if (value && !this.store.loadingOverview()) {
+      this.store.loadRepository(value);
+    }
+  }
+}
+
+src/app/features/repo-search/repo-search.component.html
+
+html
+<div class="repo-search">
+  <input
+    #urlInput
+    class="input"
+    type="text"
+    placeholder="https://github.com/owner/repo"
+    aria-label="GitHub repository URL"
+    [value]="url()"
+    (input)="url.set(urlInput.value)"
+    (keydown.enter)="submit()"
+  />
+  <button class="btn btn-primary" (click)="submit()" [disabled]="store.loadingOverview() || !url().trim()">
+    {{ store.loadingOverview() ? 'Loading…' : 'Load repository' }}
+  </button>
+</div>
+
+src/app/features/file-explorer/file-explorer.component.ts
+
+ts
+import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
+import { RepositoryStore } from '../../core/state/repository.store';
+
+const MAX_VISIBLE_FILES = 300;
+
+@Component({
+  selector: 'app-file-explorer',
+  templateUrl: './file-explorer.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
+})
+export class FileExplorerComponent {
+  protected readonly store = inject(RepositoryStore);
+  protected readonly query = signal('');
+
+  protected readonly filteredFiles = computed(() => {
+    const files = this.store.overview()?.files ?? [];
+    const query = this.query().trim().toLowerCase();
+    return query ? files.filter((f) => f.path.toLowerCase().includes(query)) : files;
+  });
+
+  protected readonly visibleFiles = computed(() => this.filteredFiles().slice(0, MAX_VISIBLE_FILES));
+
+  protected select(path: string): void {
+    this.store.explainFile(path);
+  }
+}
+
+src/app/features/file-explorer/file-explorer.component.html
+
+html
+<aside class="panel explorer">
+  <h2 class="panel-title">Files <span class="muted">({{ filteredFiles().length }})</span></h2>
+
+  <input
+    #searchInput
+    class="input"
+    type="search"
+    placeholder="Find a file… e.g. controller, .csproj"
+    aria-label="Search files"
+    [value]="query()"
+    (input)="query.set(searchInput.value)"
+  />
+
+  <ul class="file-list">
+    @for (file of visibleFiles(); track file.path) {
+      <li>
+        <button
+          class="file-item"
+          [class.active]="store.selectedFile() === file.path"
+          [title]="file.path"
+          (click)="select(file.path)"
+        >
+          {{ file.path }}
+        </button>
+      </li>
+    } @empty {
+      <li class="muted small">No files match "{{ query() }}".</li>
+    }
+  </ul>
+
+  @if (filteredFiles().length > visibleFiles().length) {
+    <p class="muted small">Showing the first {{ visibleFiles().length }} files. Refine your search to see more.</p>
+  }
+</aside>
+
+src/app/features/architecture-panel/architecture-panel.component.ts
+
+ts
+import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
+import { RepositoryStore } from '../../core/state/repository.store';
+import { MarkdownPipe } from '../../shared/pipes/markdown.pipe';
+
+@Component({
+  selector: 'app-architecture-panel',
+  imports: [MarkdownPipe],
+  templateUrl: './architecture-panel.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
+})
+export class ArchitecturePanelComponent {
+  protected readonly store = inject(RepositoryStore);
+}
+
+src/app/features/architecture-panel/architecture-panel.component.html
+
+html
+<section class="panel">
+  <div class="panel-header">
+    <h2 class="panel-title">Architecture analysis</h2>
+    <button class="btn btn-primary" (click)="store.analyzeArchitecture()" [disabled]="store.loadingArchitecture()">
+      @if (store.loadingArchitecture()) { Analyzing… }
+      @else if (store.architecture()) { Re-analyze }
+      @else { Analyze architecture }
+    </button>
+  </div>
+
+  @if (store.loadingArchitecture()) {
+    <p class="muted">Reading key files and asking the AI. This can take 10–30 seconds…</p>
+  } @else if (store.architecture()) {
+    <article class="markdown" [innerHTML]="store.architecture() | markdown"></article>
+  } @else {
+    <p class="muted">Click "Analyze architecture" to get an AI summary of how this project is structured.</p>
+  }
+</section>
+
+src/app/features/file-explanation-panel/file-explanation-panel.component.ts
+
+ts
+import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
+import { RepositoryStore } from '../../core/state/repository.store';
+import { MarkdownPipe } from '../../shared/pipes/markdown.pipe';
+
+@Component({
+  selector: 'app-file-explanation-panel',
+  imports: [MarkdownPipe],
+  templateUrl: './file-explanation-panel.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
+})
+export class FileExplanationPanelComponent {
+  protected readonly store = inject(RepositoryStore);
+}
+
+src/app/features/file-explanation-panel/file-explanation-panel.component.html
+
+html
+<section class="panel">
+  @if (store.selectedFile(); as path) {
+    <h2 class="panel-title">Explaining <code>{{ path }}</code></h2>
+
+    @if (store.loadingExplanation()) {
+      <p class="muted">Reading the file and generating an explanation…</p>
+    } @else if (store.fileExplanation()) {
+      <article class="markdown" [innerHTML]="store.fileExplanation() | markdown"></article>
+    }
+  } @else {
+    <p class="muted">Select a file from the explorer to get a plain-English explanation.</p>
+  }
+</section>
+
+src/app/features/chat-panel/chat-panel.component.ts
+
+ts
+import {
+  ChangeDetectionStrategy,
+  Component,
+  ElementRef,
+  effect,
+  inject,
+  signal,
+  viewChild,
+} from '@angular/core';
+import { RepositoryStore } from '../../core/state/repository.store';
+import { MarkdownPipe } from '../../shared/pipes/markdown.pipe';
+
+@Component({
+  selector: 'app-chat-panel',
+  imports: [MarkdownPipe],
+  templateUrl: './chat-panel.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
+})
+export class ChatPanelComponent {
+  protected readonly store = inject(RepositoryStore);
+  protected readonly draft = signal('');
+  protected readonly suggestions = [
+    'Where is the entry point of this application?',
+    'Find the files that handle authentication',
+    'Which files define the API endpoints?',
+  ];
+
+  private readonly messagesContainer = viewChild<ElementRef<HTMLElement>>('messages');
+
+  constructor() {
+    // Auto-scroll to the newest message.
+    effect(() => {
+      this.store.chatMessages();
+      this.store.chatBusy();
+      const element = this.messagesContainer()?.nativeElement;
+      if (element) {
+        setTimeout(() => (element.scrollTop = element.scrollHeight));
+      }
+    });
+  }
+
+  protected send(text: string = this.draft()): void {
+    const message = text.trim();
+    if (!message || this.store.chatBusy()) {
+      return;
+    }
+    this.store.sendChatMessage(message);
+    this.draft.set('');
+  }
+}
+
+src/app/features/chat-panel/chat-panel.component.html
+
+html
+<section class="panel chat">
+  <h2 class="panel-title">Ask the repository agent</h2>
+
+  <div class="chat-messages" #messages>
+    @for (message of store.chatMessages(); track $index) {
+      <div
+        class="chat-bubble"
+        [class.user]="message.role === 'user'"
+        [class.assistant]="message.role === 'assistant'"
+        [class.error]="message.isError"
+      >
+        @if (message.role === 'assistant' && !message.isError) {
+          <div class="markdown" [innerHTML]="message.content | markdown"></div>
+        } @else {
+          {{ message.content }}
+        }
+      </div>
+    } @empty {
+      <div>
+        <p class="muted">The agent can search, list and read files by itself. Try one of these:</p>
+        @for (suggestion of suggestions; track suggestion) {
+          <button class="chip" (click)="send(suggestion)">{{ suggestion }}</button>
+        }
+      </div>
+    }
+
+    @if (store.chatBusy()) {
+      <div class="chat-bubble assistant muted">Exploring the repository…</div>
+    }
+  </div>
+
+  <div class="chat-input">
+    <input
+      #chatInput
+      class="input"
+      type="text"
+      placeholder="Ask about the code…"
+      aria-label="Chat message"
+      [value]="draft()"
+      [disabled]="store.chatBusy()"
+      (input)="draft.set(chatInput.value)"
+      (keydown.enter)="send()"
+    />
+    <button class="btn btn-primary" (click)="send()" [disabled]="store.chatBusy() || !draft().trim()">Send</button>
+  </div>
+</section>
+
+src/app/app.component.ts
+
+ts
+import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
+import { DecimalPipe } from '@angular/common';
+import { RepositoryStore } from './core/state/repository.store';
+import { AssistantTab } from './core/models/repository.models';
+import { RepoSearchComponent } from './features/repo-search/repo-search.component';
+import { FileExplorerComponent } from './features/file-explorer/file-explorer.component';
+import { ArchitecturePanelComponent } from './features/architecture-panel/architecture-panel.component';
+import { FileExplanationPanelComponent } from './features/file-explanation-panel/file-explanation-panel.component';
+import { ChatPanelComponent } from './features/chat-panel/chat-panel.component';
+
+@Component({
+  selector: 'app-root',
+  imports: [
+    DecimalPipe,
+    RepoSearchComponent,
+    FileExplorerComponent,
+    ArchitecturePanelComponent,
+    FileExplanationPanelComponent,
+    ChatPanelComponent,
+  ],
+  templateUrl: './app.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
+})
+export class AppComponent {
+  protected readonly store = inject(RepositoryStore);
+
+  protected readonly tabs: ReadonlyArray<{ id: AssistantTab; label: string }> = [
+    { id: 'architecture', label: 'Architecture' },
+    { id: 'file', label: 'File explanation' },
+    { id: 'chat', label: 'Ask the agent' },
+  ];
+}
+
+src/app/app.component.html
+
+html
+<header class="app-header">
+  <h1>Repo Assistant</h1>
+  <p class="muted">Understand any public GitHub repository with an AI agent.</p>
+  <app-repo-search />
+</header>
+
+@if (store.error()) {
+  <div class="alert" role="alert">
+    <span>{{ store.error() }}</span>
+    <button class="link" (click)="store.clearError()">Dismiss</button>
+  </div>
+}
+
+@if (store.overview(); as repo) {
+  <section class="repo-summary">
+    <a [href]="repo.htmlUrl" target="_blank" rel="noopener">{{ repo.owner }}/{{ repo.name }}</a>
+    <span class="muted">
+      ★ {{ repo.stars | number }} · {{ repo.primaryLanguage ?? 'Unknown language' }} ·
+      branch {{ repo.defaultBranch }} · {{ repo.files.length }} files
+    </span>
+    @if (repo.description) {
+      <p>{{ repo.description }}</p>
+    }
+  </section>
+
+  <main class="workspace">
+    <app-file-explorer />
+
+    <div>
+      <nav class="tabs" role="tablist">
+        @for (tab of tabs; track tab.id) {
+          <button
+            role="tab"
+            class="tab"
+            [class.active]="store.activeTab() === tab.id"
+            [attr.aria-selected]="store.activeTab() === tab.id"
+            (click)="store.selectTab(tab.id)"
+          >
+            {{ tab.label }}
+          </button>
+        }
+      </nav>
+
+      @switch (store.activeTab()) {
+        @case ('architecture') { <app-architecture-panel /> }
+        @case ('file') { <app-file-explanation-panel /> }
+        @case ('chat') { <app-chat-panel /> }
+      }
+    </div>
+  </main>
+} @else if (!store.loadingOverview()) {
+  <p class="empty-state muted">Paste a public GitHub repository URL above to get started.</p>
+}
+
+src/styles.scss (replace)
+
+scss
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --text: #1d2330;
+  --muted: #667085;
+  --border: #e3e6eb;
+  --primary: #4f46e5;
+  --primary-text: #ffffff;
+  --accent-bg: #eef2ff;
+  --danger-bg: #fdecec;
+  --danger-text: #b42318;
+  --code-bg: #f1f3f6;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1218;
+    --surface: #171b23;
+    --text: #e6e8ec;
+    --muted: #98a2b3;
+    --border: #2a303b;
+    --primary: #818cf8;
+    --primary-text: #0f1218;
+    --accent-bg: #23263a;
+    --danger-bg: #3a1d1d;
+    --danger-text: #fda29b;
+    --code-bg: #10141b;
+    color-scheme: dark;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+app-root { display: block; max-width: 1400px; margin: 0 auto; padding: 24px; }
+
+.app-header h1 { margin: 0 0 4px; font-size: 1.6rem; }
+.muted { color: var(--muted); }
+.small { font-size: 0.85rem; }
+
+.input {
+  flex: 1;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
+.btn {
+  padding: 10px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn-primary { background: var(--primary); border-color: var(--primary); color: var(--primary-text); }
+.btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.repo-search { display: flex; gap: 8px; margin-top: 16px; }
+
+.alert {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+.link { background: none; border: none; color: inherit; text-decoration: underline; cursor: pointer; }
+
+.repo-summary { margin: 20px 0 12px; }
+.repo-summary a { margin-right: 8px; font-size: 1.1rem; font-weight: 600; color: var(--primary); }
+
+.workspace { display: grid; grid-template-columns: 340px 1fr; gap: 16px; align-items: start; }
+@media (max-width: 900px) { .workspace { grid-template-columns: 1fr; } }
+
+.panel { padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.panel-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.panel-title { margin: 0 0 12px; font-size: 1rem; }
+
+.explorer { position: sticky; top: 16px; }
+.file-list { max-height: 65vh; margin: 12px 0 0; padding: 0; overflow-y: auto; list-style: none; }
+.file-item {
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--text);
+  font: 0.85rem ui-monospace, Consolas, monospace;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.file-item:hover { background: var(--accent-bg); }
+.file-item.active { background: var(--accent-bg); color: var(--primary); font-weight: 600; }
+
+.tabs { display: flex; gap: 4px; margin-bottom: 12px; }
+.tab {
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+.tab.active { border-color: var(--primary); background: var(--accent-bg); color: var(--primary); }
+
+code, .markdown pre {
+  border-radius: 6px;
+  background: var(--code-bg);
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.85rem;
+}
+code { padding: 1px 5px; }
+.markdown { line-height: 1.6; }
+.markdown h2 { margin-top: 1.4em; font-size: 1.05rem; }
+.markdown pre { padding: 12px; overflow-x: auto; }
+.markdown pre code { padding: 0; }
+
+.chat { display: flex; flex-direction: column; height: 70vh; }
+.chat-messages { flex: 1; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
+.chat-bubble { max-width: 85%; padding: 10px 14px; border: 1px solid var(--border); border-radius: 12px; }
+.chat-bubble.user { align-self: flex-end; border-color: var(--primary); background: var(--primary); color: var(--primary-text); }
+.chat-bubble.assistant { align-self: flex-start; background: var(--surface); }
+.chat-bubble.error { background: var(--danger-bg); color: var(--danger-text); }
+.chat-input { display: flex; gap: 8px; margin-top: 12px; }
+
+.chip {
+  display: block;
+  margin: 6px 0;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--accent-bg);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.empty-state { margin-top: 64px; text-align: center; }
+Part 7: Run it
+
+Terminal 1 (backend):
+
+bash
+cd RepoAssistant
+dotnet run --project src/RepoAssistant.Api --launch-profile http
+
+Terminal 2 (frontend):
+
+bash
+cd RepoAssistant/client/repo-assistant-ui
+ng serve
+
+Open http://localhost:4200 and try a small, well-known repo first, such as https://github.com/jasontaylordev/CleanArchitecture. Then:
+
+Click a file to get an explanation.
+Click “Analyze architecture.”
+Ask the agent “Where are the API endpoints defined?”
+Troubleshooting and switching providers
+“Llm:ApiKey is missing” on startup: run the dotnet user-secrets set command from inside src/RepoAssistant.Api.
+429 / rate limit errors: wait a minute. If architecture analysis on big repos fails, lower the numbers in the Analysis section of appsettings.json.
+Agent tool calls fail or return odd errors: some models are weaker at tool calling. Try changing Llm:Model to openai/gpt-oss-120b, which Groq also hosts. Check the Groq console’s Models page for the current list, since model names change over time.
+Switching to OpenRouter: set Llm:BaseUrl to https://openrouter.ai/api/v1, put your OpenRouter key in Llm:ApiKey, and set Llm:Model to any model ending in :free that supports tool calling. No code changes are needed.
+How to explain it in your interview
+Agentic design: the chat uses Semantic Kernel plugins with FunctionChoiceBehavior.Auto(). The LLM decides which tools to call (search, list, read) and the kernel executes them in a loop. That’s the core idea of an AI agent.
+Clean Architecture: Application depends only on ILanguageModel and IRepositoryAgent, so the AI provider is swappable.
+Production thinking: caching, prompt size limits for token budgets, friendly error mapping, secrets kept out of code, and input validation.
+Natural next steps: streaming responses (SSE), a RAG version using embeddings for large repos, unit tests with xUnit and Moq for RepositoryAnalysisService, Docker, and OpenTelemetry tracing.
+
+If you hit an error while building, paste it here and I’ll help you fix it.
+
+Claude works directly with your codebase
