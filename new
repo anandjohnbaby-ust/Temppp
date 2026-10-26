@@ -1,2 +1,13 @@
 Built an AI agent in .NET with Semantic Kernel that resolves IT requests (server status, account unlocks, password resets, server restarts) through LLM tool calling against real Keycloak and Docker APIs, using Clean Architecture and an Angular frontend.
 Designed a risk-tiered guardrail layer using Semantic Kernel function-invocation filters. High-risk actions pause for human approval and run deterministically only after sign-off, with prompt-injection detection, secret redaction, a tool allow-list and separation of duties.
+
+
+
+New credentials
+System	URL	User	Password
+HelpBot (employee)	http://localhost:4200/login	alice	AlicePortal@1
+HelpBot (employee)	http://localhost:4200/login	bob	BobPortal@1
+HelpBot (IT)	http://localhost:4200/it/login	itadmin	ItAdmin@123
+Keycloak directory	http://localhost:8080/realms/helpdesk/account	alice	Alice@123
+Keycloak directory	http://localhost:8080/realms/helpdesk/account	bob	Bob@123
+Keycloak admin console	http://localhost:8080	admin	admin
