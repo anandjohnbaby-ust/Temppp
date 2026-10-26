@@ -1,24 +1,2 @@
-    {
-      "username": "alice", "email": "alice@corp.local",
-      "firstName": "Alice", "lastName": "Sharma",
-      "enabled": true, "emailVerified": true,
-      "realmRoles": ["default-roles-helpdesk", "employee"],
-      "clientRoles": { "account": ["view-profile", "manage-account"] },
-      "credentials": [{ "type": "password", "value": "Alice@123", "temporary": false }]
-    },
-    {
-      "username": "bob", "email": "bob@corp.local",
-      "firstName": "Bob", "lastName": "Mehta",
-      "enabled": true, "emailVerified": true,
-      "realmRoles": ["default-roles-helpdesk", "employee"],
-      "clientRoles": { "account": ["view-profile", "manage-account"] },
-      "credentials": [{ "type": "password", "value": "Bob@123", "temporary": false }]
-    },
-    {
-      "username": "itadmin", "email": "itadmin@corp.local",
-      "firstName": "IT", "lastName": "Admin",
-      "enabled": true, "emailVerified": true,
-      "realmRoles": ["default-roles-helpdesk", "employee", "it-approver"],
-      "clientRoles": { "account": ["view-profile", "manage-account"] },
-      "credentials": [{ "type": "password", "value": "Admin@123", "temporary": false }]
-    },
+Built an AI agent in .NET with Semantic Kernel that resolves IT requests (server status, account unlocks, password resets, server restarts) through LLM tool calling against real Keycloak and Docker APIs, using Clean Architecture and an Angular frontend.
+Designed a risk-tiered guardrail layer using Semantic Kernel function-invocation filters. High-risk actions pause for human approval and run deterministically only after sign-off, with prompt-injection detection, secret redaction, a tool allow-list and separation of duties.
